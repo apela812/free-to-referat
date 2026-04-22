@@ -22,6 +22,7 @@ const META_FIELDS = [
 
 const REPORT_SECTION_ORDER = ["1", "2.1", "2.2", "2.3", "3.1", "3.2", "3.3", "3.4", "4"];
 const DOCUMENT_SECTION_ORDER = [...REPORT_SECTION_ORDER, "5"];
+const FORCED_PAGEBREAK_SECTION_IDS = new Set(DOCUMENT_SECTION_ORDER.slice(1));
 
 const DEFAULT_FORM_DATA = {
   institution: "",
@@ -173,6 +174,8 @@ const PROMPT_TEMPLATE = `Верни только валидный JSON. Не д�
 10. Не добавляй содержание, номера страниц, титульный лист как отдельный текстовый блок или служебные пометки.
 11. Внутри content не используй markdown, списки, подпункты, code blocks или нумерацию разделов.
 12. Пиши связными абзацами.
+13. Каждый content дели на несколько абзацев и разделяй абзацы двумя символами перевода строки: \n\n.
+14. Не сливай весь раздел в одну сплошную простыню текста.
 
 Содержательные требования:
 
@@ -192,6 +195,7 @@ const PROMPT_TEMPLATE = `Верни только валидный JSON. Не д�
 7. Раздел "3.4" обязан содержать и проблемы, и перспективы развития темы.
 8. Раздел "4" должен содержать итоговый вывод по всей работе.
 9. references должен содержать от 6 до 8 правдоподобных источников на русском языке.
+10. Каждый раздел должен восприниматься как самостоятельная часть реферата с внутренней логикой и 3-5 абзацами текста. Для "4" допустимо 2-3 абзаца.
 
 Требования к стилю:
 
@@ -202,6 +206,7 @@ const PROMPT_TEMPLATE = `Верни только валидный JSON. Не д�
 * без публицистики
 * без списков внутри content
 * без повторного написания номеров разделов внутри content
+* с явным делением на абзацы внутри каждого раздела
 
 Если каких-то данных не хватает, всё равно сохрани структуру JSON и подставь нейтральные значения.
 
@@ -576,12 +581,60 @@ function normalizeReportCandidate(input) {
   return root;
 }
 
+function splitIntoSentences(text) {
+  const matches = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .match(/[^.!?\u2026]+(?:[.!?\u2026]+|$)/g);
+
+  return (matches || []).map((sentence) => sentence.trim()).filter((sentence) => sentence.length > 0);
+}
+
 function splitIntoParagraphs(text) {
-  return String(text || "")
-    .replace(/\r\n/g, "\n")
+  const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
+
+  if (normalized.length === 0) {
+    return [];
+  }
+
+  const explicitParagraphs = normalized
     .split(/\n{2,}/)
     .map((paragraph) => paragraph.replace(/\n+/g, " ").replace(/\s+/g, " ").trim())
     .filter((paragraph) => paragraph.length > 0);
+
+  if (explicitParagraphs.length > 1) {
+    return explicitParagraphs;
+  }
+
+  const sentences = splitIntoSentences(normalized);
+  if (sentences.length <= 3) {
+    return explicitParagraphs;
+  }
+
+  const paragraphs = [];
+  let buffer = [];
+  let bufferLength = 0;
+
+  for (const sentence of sentences) {
+    buffer.push(sentence);
+    bufferLength += sentence.length + 1;
+
+    if (buffer.length >= 3 || bufferLength >= 360) {
+      paragraphs.push(buffer.join(" "));
+      buffer = [];
+      bufferLength = 0;
+    }
+  }
+
+  if (buffer.length > 0) {
+    if (paragraphs.length > 0 && buffer.length === 1) {
+      paragraphs[paragraphs.length - 1] += ` ${buffer[0]}`;
+    } else {
+      paragraphs.push(buffer.join(" "));
+    }
+  }
+
+  return paragraphs;
 }
 
 function buildPreviewData(input, isComplete) {
@@ -1139,6 +1192,7 @@ function buildPreviewBlocks(previewData) {
       id: `${sectionId}:heading`,
       sectionId,
       kind: "heading",
+      forcePageBreakBefore: FORCED_PAGEBREAK_SECTION_IDS.has(sectionId),
       text: sectionId === "5" ? "5. Список литературы" : getSectionLabel(sectionId, previewData),
     });
 
@@ -1213,6 +1267,10 @@ function buildPaginatedPreview(blocks, blockHeights) {
     const block = queue.shift();
     const height = blockHeights[block.id] || estimateBlockHeight(block);
     const nextBlock = queue[0];
+
+    if (block.kind === "heading" && block.forcePageBreakBefore && currentPageBlocks.length > 0) {
+      pushPage();
+    }
 
     if (block.kind === "heading" && nextBlock) {
       const minimumSectionStartHeight =
@@ -1331,8 +1389,9 @@ function buildPlainTextReport(previewData, tocEntries) {
 
   const sectionsText = REPORT_SECTION_ORDER.map((sectionId) => {
     const section = previewData.sections[sectionId];
-    return `${getSectionLabel(sectionId, previewData)}\n\n${section.content}`;
-  }).join("\n\n");
+    const paragraphs = splitIntoParagraphs(section.content);
+    return `${getSectionLabel(sectionId, previewData)}\n\n${paragraphs.join("\n\n")}`;
+  }).join("\n\n\n");
 
   const referencesText = [
     "5. Список литературы",
@@ -1563,7 +1622,7 @@ async function exportDocx(report, tocEntries) {
 
   const bodyChildren = [];
 
-  for (const sectionId of REPORT_SECTION_ORDER) {
+  REPORT_SECTION_ORDER.forEach((sectionId, sectionIndex) => {
     const section = report.sections[sectionId];
     const headingTitle =
       sectionId === "1"
@@ -1572,13 +1631,18 @@ async function exportDocx(report, tocEntries) {
           ? "4. Заключение"
           : `${sectionId}. ${section.title}`;
 
+    if (sectionIndex > 0) {
+      bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
+    }
+
     bodyChildren.push(createSectionHeading(headingTitle));
 
     for (const paragraph of splitIntoParagraphs(section.content)) {
       bodyChildren.push(createNormalParagraph(paragraph));
     }
-  }
+  });
 
+  bodyChildren.push(new Paragraph({ children: [new PageBreak()] }));
   bodyChildren.push(createSectionHeading("5. Список литературы"));
 
   report.references.forEach((entry, index) => {
