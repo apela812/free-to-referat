@@ -18,6 +18,7 @@
   .panel:not(.panel--preview),
   .panel--preview .panel__header,
   .preview-metrics,
+  .preview-adjustments,
   .preview-adjustment,
   .mode-switch,
   .report-measurement {

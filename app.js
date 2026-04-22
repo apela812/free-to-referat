@@ -99,7 +99,11 @@ const PARAGRAPH_GAP_PX = 14;
 const REFERENCE_GAP_PX = 12;
 const SECTION_TAIL_GAP_PX = 18;
 const MIN_SPLIT_CHUNK_LENGTH = 140;
-const DEFAULT_AUTHOR_BLOCK_TOP = 68;
+const DEFAULT_UI_SETTINGS = {
+  titleBlockTop: 49,
+  authorBlockTop: 72,
+  authorBlockRight: 86,
+};
 
 const PROMPT_TEMPLATE = `Верни только валидный JSON. Не добавляй пояснений до JSON и после JSON. Не используй markdown. Не оборачивай ответ в \`\`\`json. Ответ должен успешно проходить JSON.parse().
 
@@ -1725,22 +1729,50 @@ function clampAuthorBlockTop(value) {
   const numeric = Number.parseInt(String(value), 10);
 
   if (Number.isNaN(numeric)) {
-    return DEFAULT_AUTHOR_BLOCK_TOP;
+    return DEFAULT_UI_SETTINGS.authorBlockTop;
   }
 
   return Math.min(80, Math.max(52, numeric));
 }
 
-function buildStoredProject(formData, prompt, rawLlmResponse, validReport, authorBlockTop) {
+function clampTitleBlockTop(value) {
+  const numeric = Number.parseInt(String(value), 10);
+
+  if (Number.isNaN(numeric)) {
+    return DEFAULT_UI_SETTINGS.titleBlockTop;
+  }
+
+  return Math.min(60, Math.max(38, numeric));
+}
+
+function clampAuthorBlockRight(value) {
+  const numeric = Number.parseInt(String(value), 10);
+
+  if (Number.isNaN(numeric)) {
+    return DEFAULT_UI_SETTINGS.authorBlockRight;
+  }
+
+  return Math.min(130, Math.max(48, numeric));
+}
+
+function normalizeUiSettings(source) {
+  const candidate = isPlainObject(source) ? source : {};
+
+  return {
+    titleBlockTop: clampTitleBlockTop(candidate.titleBlockTop),
+    authorBlockTop: clampAuthorBlockTop(candidate.authorBlockTop),
+    authorBlockRight: clampAuthorBlockRight(candidate.authorBlockRight),
+  };
+}
+
+function buildStoredProject(formData, prompt, rawLlmResponse, validReport, uiSettings) {
   return {
     version: "project_v1",
     formData: { ...formData },
     prompt,
     rawLlmResponse,
     normalizedParsedData: validReport,
-    ui: {
-      authorBlockTop: clampAuthorBlockTop(authorBlockTop),
-    },
+    ui: normalizeUiSettings(uiSettings),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -1775,11 +1807,7 @@ function normalizeProjectDraftCandidate(candidate) {
         : buildPrompt(formData),
     rawLlmResponse: typeof candidate.rawLlmResponse === "string" ? candidate.rawLlmResponse : "",
     normalizedParsedData,
-    ui: {
-      authorBlockTop: clampAuthorBlockTop(
-        isPlainObject(candidate.ui) ? candidate.ui.authorBlockTop : DEFAULT_AUTHOR_BLOCK_TOP,
-      ),
-    },
+    ui: normalizeUiSettings(candidate.ui),
     updatedAt:
       typeof candidate.updatedAt === "string" && candidate.updatedAt.trim().length > 0
         ? candidate.updatedAt
@@ -1886,7 +1914,7 @@ function panelMarkup({ title, description, body, actions = "", className = "" })
 }
 
 function renderSourcePanel() {
-  const workFieldsMarkup = FORM_FIELD_CONFIG.filter((field) =>
+  const titleFieldsMarkup = FORM_FIELD_CONFIG.filter((field) =>
     ["institution", "discipline", "topic"].includes(field.key),
   )
     .map(
@@ -1905,7 +1933,7 @@ function renderSourcePanel() {
     .join("");
 
   const authorFieldsMarkup = FORM_FIELD_CONFIG.filter((field) =>
-    ["author", "class_group", "city", "year"].includes(field.key),
+    ["author", "class_group"].includes(field.key),
   )
     .map(
       (field) => `
@@ -1922,10 +1950,28 @@ function renderSourcePanel() {
     )
     .join("");
 
+  const locationFieldsMarkup = FORM_FIELD_CONFIG.filter((field) =>
+    ["city", "year"].includes(field.key),
+  )
+    .map(
+      (field) => `
+        <label class="field">
+          <span class="field__label">${escapeHtml(field.label)}</span>
+          <input
+            class="field__control"
+            type="text"
+            data-form-field="${field.key}"
+            placeholder="${escapeHtml(field.placeholder)}"
+          />
+        </label>
+      `,
+    )
+    .join("");
+
   return panelMarkup({
     title: "Параметры",
     description:
-      "Метаданные работы и исходный материал, из которых собирается единый prompt для внешней модели.",
+      "Заполни титульные данные, затем добавь материал для внешней модели. Всё расположено в том порядке, в котором обычно собирают реферат.",
     actions: `
       <div class="button-row">
         <button type="button" class="button button--secondary" data-action="fill-demo">Демо</button>
@@ -1938,24 +1984,36 @@ function renderSourcePanel() {
       <div class="form-stack">
         <section class="form-section">
           <div class="form-section__header">
-            <h3 class="form-section__title">Данные работы</h3>
-            <p class="form-section__text">Базовые поля, которые попадут на титульный лист и в prompt.</p>
+            <p class="form-section__eyebrow">Шаг 1</p>
+            <h3 class="form-section__title">Титульный лист</h3>
+            <p class="form-section__text">Сначала заполни учебное учреждение, дисциплину и тему. Эти поля сразу влияют на первую страницу и prompt.</p>
           </div>
-          <div class="form-grid">${workFieldsMarkup}</div>
+          <div class="form-grid">${titleFieldsMarkup}</div>
         </section>
 
         <section class="form-section">
           <div class="form-section__header">
-            <h3 class="form-section__title">Автор и реквизиты</h3>
-            <p class="form-section__text">Эти поля нужны для подписи работы и финального оформления.</p>
+            <p class="form-section__eyebrow">Шаг 2</p>
+            <h3 class="form-section__title">Автор</h3>
+            <p class="form-section__text">Данные ученика и обозначение класса или группы. Этот блок используется в подписи на титульной странице.</p>
           </div>
           <div class="form-grid">${authorFieldsMarkup}</div>
         </section>
 
+        <section class="form-section">
+          <div class="form-section__header">
+            <p class="form-section__eyebrow">Шаг 3</p>
+            <h3 class="form-section__title">Реквизиты документа</h3>
+            <p class="form-section__text">Город и год выводятся внизу титульного листа и используются в финальном документе.</p>
+          </div>
+          <div class="form-grid form-grid--compact">${locationFieldsMarkup}</div>
+        </section>
+
         <section class="form-section form-section--source">
           <div class="form-section__header">
-            <h3 class="form-section__title">Исходный материал</h3>
-            <p class="form-section__text">Сюда удобно вставлять тезисы, черновик, выдержки или контекст для внешней LLM.</p>
+            <p class="form-section__eyebrow">Шаг 4</p>
+            <h3 class="form-section__title">Материал для модели</h3>
+            <p class="form-section__text">Сюда вставляй план, тезисы, выдержки из источников или черновой текст. Чем чище материал, тем лучше итоговый JSON.</p>
           </div>
           <label class="field">
             <span class="field__label">Текст для модели</span>
@@ -1965,6 +2023,14 @@ function renderSourcePanel() {
               placeholder="Например: краткий план, учебные тезисы, выдержки из источников или уже готовый черновой материал."
             ></textarea>
           </label>
+        </section>
+
+        <section class="form-section form-section--muted">
+          <div class="form-section__header">
+            <p class="form-section__eyebrow">Шаг 5</p>
+            <h3 class="form-section__title">Тонкая настройка титульного листа</h3>
+            <p class="form-section__text">Точные положения заголовка и подписи регулируются справа, в блоке предпросмотра документа.</p>
+          </div>
         </section>
       </div>
     `,
@@ -2065,8 +2131,9 @@ function renderMetaValue(value, missing) {
   )}</span>`;
 }
 
-function renderTitlePage(previewData, authorBlockTop) {
+function renderTitlePage(previewData, uiSettings) {
   const { meta, metaMissing } = previewData;
+  const safeSettings = normalizeUiSettings(uiSettings);
 
   return `
     <article class="report-sheet report-sheet--title">
@@ -2074,12 +2141,12 @@ function renderTitlePage(previewData, authorBlockTop) {
         <div class="title-page__top">
           <p class="title-page__institution">${renderMetaValue(meta.institution, metaMissing.institution)}</p>
         </div>
-        <div class="title-page__center">
+        <div class="title-page__center" style="top: ${safeSettings.titleBlockTop}%;">
           <h1 class="title-page__headline">РЕФЕРАТ</h1>
           <p class="title-page__line">По дисциплине: ${renderMetaValue(meta.discipline, metaMissing.discipline)}</p>
           <p class="title-page__line">На тему: «${renderMetaValue(meta.topic, metaMissing.topic)}»</p>
         </div>
-        <div class="title-page__author-block" style="top: ${clampAuthorBlockTop(authorBlockTop)}%;">
+        <div class="title-page__author-block" style="top: ${safeSettings.authorBlockTop}%; right: ${safeSettings.authorBlockRight}px;">
           <p>Работу выполнил:</p>
           <p>${renderMetaValue(meta.class_group, metaMissing.class_group)}</p>
           <p>${renderMetaValue(meta.author, metaMissing.author)}</p>
@@ -2246,30 +2313,73 @@ function renderJsonOutput(processResult) {
   `;
 }
 
-function renderAuthorBlockControl(authorBlockTop) {
-  const safeValue = clampAuthorBlockTop(authorBlockTop);
+function renderTitlePageControls(uiSettings) {
+  const safeSettings = normalizeUiSettings(uiSettings);
 
   return `
-    <div class="preview-adjustment">
-      <label class="preview-adjustment__label" for="author-block-top">Положение блока автора</label>
-      <div class="preview-adjustment__controls">
-        <input
-          id="author-block-top"
-          class="preview-adjustment__range"
-          type="range"
-          min="52"
-          max="80"
-          step="1"
-          value="${safeValue}"
-          data-role="author-block-top"
-        />
-        <output class="preview-adjustment__value">${safeValue}%</output>
+    <div class="preview-adjustments">
+      <div class="preview-adjustments__header">
+        <h3 class="preview-adjustments__title">Тонкая настройка титульного листа</h3>
+        <p class="preview-adjustments__text">Настройки меняют только оформление первой страницы и сохраняются вместе с проектом.</p>
+      </div>
+
+      <div class="preview-adjustments__grid">
+        <div class="preview-adjustment">
+          <label class="preview-adjustment__label" for="title-block-top">Положение заголовочного блока</label>
+          <div class="preview-adjustment__controls">
+            <input
+              id="title-block-top"
+              class="preview-adjustment__range"
+              type="range"
+              min="38"
+              max="60"
+              step="1"
+              value="${safeSettings.titleBlockTop}"
+              data-ui-setting="titleBlockTop"
+            />
+            <output class="preview-adjustment__value">${safeSettings.titleBlockTop}%</output>
+          </div>
+        </div>
+
+        <div class="preview-adjustment">
+          <label class="preview-adjustment__label" for="author-block-top">Положение блока автора</label>
+          <div class="preview-adjustment__controls">
+            <input
+              id="author-block-top"
+              class="preview-adjustment__range"
+              type="range"
+              min="52"
+              max="80"
+              step="1"
+              value="${safeSettings.authorBlockTop}"
+              data-ui-setting="authorBlockTop"
+            />
+            <output class="preview-adjustment__value">${safeSettings.authorBlockTop}%</output>
+          </div>
+        </div>
+
+        <div class="preview-adjustment">
+          <label class="preview-adjustment__label" for="author-block-right">Отступ блока автора справа</label>
+          <div class="preview-adjustment__controls">
+            <input
+              id="author-block-right"
+              class="preview-adjustment__range"
+              type="range"
+              min="48"
+              max="130"
+              step="1"
+              value="${safeSettings.authorBlockRight}"
+              data-ui-setting="authorBlockRight"
+            />
+            <output class="preview-adjustment__value">${safeSettings.authorBlockRight}px</output>
+          </div>
+        </div>
       </div>
     </div>
   `;
 }
 
-function renderPreviewPanel(processResult, paginatedPreview, outputMode, authorBlockTop) {
+function renderPreviewPanel(processResult, paginatedPreview, outputMode, uiSettings) {
   const actions = buildOutputModeActions(outputMode, processResult);
 
   if (outputMode === "text") {
@@ -2327,11 +2437,11 @@ function renderPreviewPanel(processResult, paginatedPreview, outputMode, authorB
           Режим: <strong>${processResult.previewData.isComplete ? "строгий" : "fallback"}</strong>
         </span>
       </div>
-      ${renderAuthorBlockControl(authorBlockTop)}
+      ${renderTitlePageControls(uiSettings)}
 
       <div class="preview-stage">
         <div class="preview-stack">
-          ${renderTitlePage(processResult.previewData, authorBlockTop)}
+          ${renderTitlePage(processResult.previewData, uiSettings)}
           ${renderTocPage(tocEntries)}
           ${paginatedPreview.pages
             .map(
@@ -2448,7 +2558,7 @@ function initApp(root) {
     emptyProcessResult(),
     null,
     "preview",
-    DEFAULT_AUTHOR_BLOCK_TOP,
+    DEFAULT_UI_SETTINGS,
   );
   actionsPanel.innerHTML = renderActionsPanel();
 
@@ -2526,7 +2636,7 @@ function initApp(root) {
     processResult: emptyProcessResult(),
     paginatedPreview: null,
     outputMode: "preview",
-    authorBlockTop: DEFAULT_AUTHOR_BLOCK_TOP,
+    uiSettings: { ...DEFAULT_UI_SETTINGS },
     statusMessage: "Черновик сохраняется локально в браузере автоматически.",
     hydrated: false,
   };
@@ -2557,7 +2667,7 @@ function initApp(root) {
         promptText(),
         state.rawLlmResponse,
         state.processResult.validReport,
-        state.authorBlockTop,
+        state.uiSettings,
       ),
     );
   };
@@ -2631,7 +2741,7 @@ function initApp(root) {
       state.processResult,
       state.paginatedPreview,
       state.outputMode,
-      state.authorBlockTop,
+      state.uiSettings,
     );
     syncActionsPanel();
   };
@@ -2656,7 +2766,7 @@ function initApp(root) {
       state.processResult,
       state.paginatedPreview,
       state.outputMode,
-      state.authorBlockTop,
+      state.uiSettings,
     );
     schedulePreviewMeasurement();
   };
@@ -2864,14 +2974,27 @@ function initApp(root) {
       return;
     }
 
-    if (target.dataset.role !== "author-block-top") {
+    const settingKey = target.dataset.uiSetting;
+    if (!settingKey) {
       return;
     }
 
-    state.authorBlockTop = clampAuthorBlockTop(target.value);
+    const nextSettings = { ...state.uiSettings };
+
+    if (settingKey === "titleBlockTop") {
+      nextSettings.titleBlockTop = clampTitleBlockTop(target.value);
+    } else if (settingKey === "authorBlockTop") {
+      nextSettings.authorBlockTop = clampAuthorBlockTop(target.value);
+    } else if (settingKey === "authorBlockRight") {
+      nextSettings.authorBlockRight = clampAuthorBlockRight(target.value);
+    } else {
+      return;
+    }
+
+    state.uiSettings = nextSettings;
     syncPreviewPanel();
     persistProject();
-    setStatus(`Положение блока автора: ${state.authorBlockTop}%.`);
+    setStatus("Настройки титульного листа обновлены.");
   });
 
   refs.printButton.addEventListener("click", () => {
@@ -2915,7 +3038,7 @@ function initApp(root) {
         promptText(),
         state.rawLlmResponse,
         state.processResult.validReport,
-        state.authorBlockTop,
+        state.uiSettings,
       ),
     );
     setStatus("Project JSON экспортирован.");
@@ -2935,9 +3058,7 @@ function initApp(root) {
       const imported = await parseImportedProject(file);
       state.formData = imported.formData;
       state.rawLlmResponse = imported.rawLlmResponse;
-      state.authorBlockTop = clampAuthorBlockTop(
-        imported.ui ? imported.ui.authorBlockTop : DEFAULT_AUTHOR_BLOCK_TOP,
-      );
+      state.uiSettings = normalizeUiSettings(imported.ui);
       syncFormFields();
       syncPromptPanel();
       syncJsonTextarea();
@@ -2966,7 +3087,7 @@ function initApp(root) {
     state.processResult = emptyProcessResult();
     state.paginatedPreview = null;
     state.outputMode = "preview";
-    state.authorBlockTop = DEFAULT_AUTHOR_BLOCK_TOP;
+    state.uiSettings = { ...DEFAULT_UI_SETTINGS };
     state.statusMessage = "Проект сброшен и localStorage очищен.";
     clearStoredProject();
     syncFormFields();
@@ -2990,9 +3111,7 @@ function initApp(root) {
     state.paginatedPreview = state.processResult.previewData
       ? buildEstimatedPaginatedPreview(state.processResult.previewData)
       : null;
-    state.authorBlockTop = clampAuthorBlockTop(
-      storedProject.ui ? storedProject.ui.authorBlockTop : DEFAULT_AUTHOR_BLOCK_TOP,
-    );
+    state.uiSettings = normalizeUiSettings(storedProject.ui);
     state.statusMessage = "Черновик восстановлен из localStorage.";
   }
 
